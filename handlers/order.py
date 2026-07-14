@@ -3,14 +3,32 @@ import logging
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from aiogram import F, Router, types
 from aiogram.enums import ContentType
 
 from services.google_sheets import sheets_service
+from services.order_sheet_schema import (
+	COL_CANCELLATION_REASON,
+	COL_CANCELLED_AT,
+	COL_COLLECTED_AT,
+	COL_CREATED_AT,
+	COL_CUSTOMER_NAME,
+	COL_ORDER_DETAILS,
+	COL_PHONE,
+	COL_PICKUP_DATETIME,
+	COL_READY_NOTIFICATION_SENT_AT,
+	COL_REMINDER_SENT_AT,
+	COL_STATUS,
+	COL_STATUS_UPDATED_AT,
+	COL_TELEGRAM_CHAT_ID,
+	COL_TOTAL,
+)
 
 
 order_router = Router()
+PARIS_TZ = ZoneInfo("Europe/Paris")
 
 
 @order_router.message(F.text == "📋 Passer une commande")
@@ -136,6 +154,14 @@ def _format_pickup_datetime(value: str) -> str:
 	return pickup_datetime.strftime("%Hh%M %d-%m-%Y")
 
 
+def _now_paris() -> datetime:
+	return datetime.now(PARIS_TZ)
+
+
+def _format_display_datetime(value: datetime) -> str:
+	return value.strftime("%Hh%M %d-%m-%Y")
+
+
 @order_router.message(F.content_type == ContentType.WEB_APP_DATA)
 async def web_app_data_handler(message: types.Message) -> None:
 	if message.web_app_data is None:
@@ -180,21 +206,28 @@ async def web_app_data_handler(message: types.Message) -> None:
 		total_raw = payload.get("total_price")
 	total_price = _format_total(total_raw)
 
-	row_to_save = [
-		datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-		name,
-		phone,
-		pickup_datetime,
-		items_details,
-		total_price if total_price is not None else "N/A",
-		message.chat.id,
-		"",
-	]
+	created_at = _now_paris()
+	created_at_display = _format_display_datetime(created_at)
+	row_values = {
+		COL_CREATED_AT: created_at_display,
+		COL_CUSTOMER_NAME: name,
+		COL_PHONE: phone,
+		COL_PICKUP_DATETIME: pickup_datetime,
+		COL_ORDER_DETAILS: items_details,
+		COL_TOTAL: total_price if total_price is not None else "",
+		COL_TELEGRAM_CHAT_ID: message.chat.id,
+		COL_REMINDER_SENT_AT: "",
+		COL_STATUS: "Nouveau",
+		COL_STATUS_UPDATED_AT: created_at_display,
+		COL_READY_NOTIFICATION_SENT_AT: "",
+		COL_COLLECTED_AT: "",
+		COL_CANCELLED_AT: "",
+		COL_CANCELLATION_REASON: "",
+	}
 
 	try:
-		logging.info("Saving order to Google Sheets: %s", row_to_save)
-		await sheets_service.append_order(row_to_save)
-		logging.info("Order saved to Google Sheets successfully")
+		order_id = await sheets_service.append_order_with_sequential_id(row_values, created_at)
+		logging.info("Order saved to Google Sheets successfully with order_id=%s", order_id)
 	except Exception:
 		logging.exception("Failed to save order to Google Sheets")
 		await message.answer(

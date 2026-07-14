@@ -25,6 +25,13 @@ async def main() -> None:
 		await bot.session.close()
 		return
 
+	try:
+		await sheets_service.ensure_order_schema()
+	except Exception:
+		logging.exception("Failed to initialize Google Sheets order schema. Exiting application.")
+		await bot.session.close()
+		return
+
 	reminder_task = asyncio.create_task(run_pickup_reminder_worker(bot))
 
 	try:

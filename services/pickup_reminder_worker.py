@@ -6,6 +6,14 @@ from zoneinfo import ZoneInfo
 from aiogram import Bot
 
 from services.google_sheets import sheets_service
+from services.order_sheet_schema import (
+	COL_CUSTOMER_NAME,
+	COL_PICKUP_DATETIME,
+	COL_REMINDER_SENT_AT,
+	COL_TELEGRAM_CHAT_ID,
+	column_1based,
+	get_row_value,
+)
 
 
 REMINDER_LEAD_MINUTES = 1
@@ -24,23 +32,18 @@ def _format_timestamp(value: datetime) -> str:
 
 
 async def _get_first_worksheet_rows() -> list[list[str]]:
-	def _read_rows() -> list[list[str]]:
-		worksheet = sheets_service.spreadsheet.get_worksheet(0)
-		if worksheet is None:
-			raise RuntimeError("The spreadsheet does not contain any worksheets")
-		return worksheet.get_all_values()
-
-	return await asyncio.to_thread(_read_rows)
+	return await sheets_service.get_all_rows()
 
 
 async def _update_reminder_sent_at(row_number: int, timestamp: str) -> None:
-	def _write_timestamp() -> None:
-		worksheet = sheets_service.spreadsheet.get_worksheet(0)
-		if worksheet is None:
-			raise RuntimeError("The spreadsheet does not contain any worksheets")
-		worksheet.update_cell(row_number, 8, timestamp)
-
-	await asyncio.to_thread(_write_timestamp)
+	try:
+		await sheets_service.update_cell(row_number, column_1based(COL_REMINDER_SENT_AT), timestamp)
+	except Exception:
+		logging.exception(
+			"Error while updating Google Sheets reminder timestamp for row %s",
+			row_number,
+		)
+		raise
 
 
 async def _process_reminders(bot: Bot) -> None:
@@ -57,14 +60,14 @@ async def _process_reminders(bot: Bot) -> None:
 
 	for row_number, row in enumerate(rows[1:], start=2):
 		try:
-			if len(row) < 8:
-				logging.info("Skipped invalid reminder row %s: missing reminder columns", row_number)
+			if len(row) <= column_1based(COL_TELEGRAM_CHAT_ID) - 1:
+				logging.info("Skipped invalid reminder row %s: missing technical columns", row_number)
 				continue
 
-			customer_name = (row[1] or "").strip()
-			pickup_value = (row[3] or "").strip()
-			telegram_chat_id = (row[6] or "").strip()
-			reminder_sent_at = (row[7] or "").strip()
+			customer_name = get_row_value(row, COL_CUSTOMER_NAME).strip()
+			pickup_value = get_row_value(row, COL_PICKUP_DATETIME).strip()
+			telegram_chat_id = get_row_value(row, COL_TELEGRAM_CHAT_ID).strip()
+			reminder_sent_at = get_row_value(row, COL_REMINDER_SENT_AT).strip()
 
 			if not telegram_chat_id or reminder_sent_at:
 				continue
