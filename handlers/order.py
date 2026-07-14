@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any
 
 from aiogram import F, Router, types
+from aiogram.enums import ContentType
 
 from services.google_sheets import sheets_service
 
@@ -61,7 +62,12 @@ def _format_items(items_value: Any) -> str:
 			.strip()
 		)
 		quantity = raw_item.get("quantity") or raw_item.get("qty") or raw_item.get("count") or 1
-		price = raw_item.get("price") or raw_item.get("unitPrice") or raw_item.get("lineTotal")
+		price = (
+			raw_item.get("price")
+			or raw_item.get("unitPrice")
+			or raw_item.get("lineTotal")
+			or raw_item.get("line_total")
+		)
 
 		item_text = f"{name} x{quantity}"
 		if price not in (None, ""):
@@ -85,7 +91,7 @@ def _format_total(total_value: Any) -> str:
 	return f"{total_text}€"
 
 
-@order_router.message(F.content_type == types.ContentType.WEB_APP_DATA)
+@order_router.message(F.content_type == ContentType.WEB_APP_DATA)
 async def web_app_data_handler(message: types.Message) -> None:
 	if message.web_app_data is None:
 		await message.answer("Les données de la commande sont introuvables.")
@@ -100,12 +106,15 @@ async def web_app_data_handler(message: types.Message) -> None:
 
 	logging.info("Web App payload received: %s", payload)
 
-	name = _pick_first(payload, ["name", "userName"])
-	phone = _pick_first(payload, ["phone", "userPhone"])
+	name = _pick_first(payload, ["name", "userName", "customer_name"])
+	phone = _pick_first(payload, ["phone", "userPhone", "customer_phone"])
 	pickup_date = _pick_first(payload, ["date", "deliveryDate"], default="")
 	pickup_time = _pick_first(payload, ["time", "deliveryTime"], default="")
+	pickup_datetime_full = _pick_first(payload, ["pickup_datetime"], default="")
 
-	if pickup_date and pickup_time:
+	if pickup_datetime_full:
+		pickup_datetime = pickup_datetime_full
+	elif pickup_date and pickup_time:
 		pickup_datetime = f"{pickup_date} {pickup_time}"
 	elif pickup_date:
 		pickup_datetime = pickup_date
@@ -122,6 +131,8 @@ async def web_app_data_handler(message: types.Message) -> None:
 	total_raw = payload.get("total")
 	if total_raw is None:
 		total_raw = payload.get("totalPrice")
+	if total_raw is None:
+		total_raw = payload.get("total_price")
 	total_price = _format_total(total_raw)
 
 	row_to_save = [
@@ -134,7 +145,9 @@ async def web_app_data_handler(message: types.Message) -> None:
 	]
 
 	try:
+		logging.info("Saving order to Google Sheets: %s", row_to_save)
 		await sheets_service.append_order(row_to_save)
+		logging.info("Order saved to Google Sheets successfully")
 	except Exception:
 		logging.exception("Failed to save order to Google Sheets")
 		await message.answer(
@@ -142,6 +155,4 @@ async def web_app_data_handler(message: types.Message) -> None:
 		)
 		return
 
-	await message.answer(
-		"Merci ! Votre commande a bien été reçue. Nous la traitons maintenant."
-	)
+	await message.answer("Merci pour votre commande ! Nous la preparons deja...")
