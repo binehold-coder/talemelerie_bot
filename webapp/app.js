@@ -75,6 +75,8 @@ const pickupDatetimeInput = document.getElementById("pickup-datetime");
 const allergenCheckbox = document.getElementById("allergen-confirmation");
 const totalAmountElement = document.getElementById("total-amount");
 const confirmOrderButton = document.getElementById("confirm-order-btn");
+const customerNameStorageKey = "talemelerie_customer_name";
+const customerPhoneStorageKey = "talemelerie_customer_phone";
 
 // FIX: Local timezone calculation and 15-minute step rounding
 function initializePickupTime() {
@@ -94,6 +96,7 @@ function initializePickupTime() {
 	pickupDatetimeInput.min = localMinDate.toISOString().slice(0, 16);
 }
 initializePickupTime();
+prefillCustomerContact();
 
 function formatPrice(amount) {
 	return new Intl.NumberFormat("fr-FR", {
@@ -133,6 +136,21 @@ function toCents(amount) {
 
 function fromCents(cents) {
 	return Number((cents / 100).toFixed(2));
+}
+
+
+function prefillCustomerContact() {
+	const savedName = localStorage.getItem(customerNameStorageKey);
+	if (savedName && clientNameInput) {
+		clientNameInput.value = savedName;
+	}
+
+	const savedPhone = localStorage.getItem(customerPhoneStorageKey);
+	if (savedPhone && phoneNumberInput) {
+		phoneNumberInput.value = savedPhone;
+	}
+
+	validateForm();
 }
 
 function renderTabs() {
@@ -563,6 +581,8 @@ if (confirmOrderButton) {
 
 		// Validation passed, submit order
 		const orderData = buildPayload();
+		localStorage.setItem(customerNameStorageKey, clientNameInput.value.trim());
+		localStorage.setItem(customerPhoneStorageKey, phoneNumberInput.value.trim());
 
 		if (window.Telegram && window.Telegram.WebApp) {
 			const tg = window.Telegram.WebApp;
