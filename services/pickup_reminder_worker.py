@@ -35,6 +35,35 @@ async def _get_first_worksheet_rows() -> list[list[str]]:
 	return await sheets_service.get_all_rows()
 
 
+async def _get_recent_orders(now: datetime) -> list[tuple[int, list[str]]]:
+	# Prefilter rows to only the pickup window that can actually trigger reminders.
+	rows = await _get_first_worksheet_rows()
+	if len(rows) <= 1:
+		return []
+
+	window_start = now - timedelta(hours=1)
+	window_end = now + timedelta(hours=1)
+	recent_orders: list[tuple[int, list[str]]] = []
+
+	for row_number, row in enumerate(rows[1:], start=2):
+		pickup_value = get_row_value(row, COL_PICKUP_DATETIME).strip()
+		pickup_datetime = _parse_pickup_datetime(pickup_value)
+		if pickup_datetime is None:
+			continue
+
+		if window_start <= pickup_datetime <= window_end:
+			recent_orders.append((row_number, row))
+
+	logging.info(
+		"Filtered Google Sheets reminder rows: kept %s of %s rows in pickup window [%s, %s]",
+		len(recent_orders),
+		max(len(rows) - 1, 0),
+		window_start.strftime("%Hh%M %d-%m-%Y"),
+		window_end.strftime("%Hh%M %d-%m-%Y"),
+	)
+	return recent_orders
+
+
 async def _update_reminder_sent_at(row_number: int, timestamp: str) -> None:
 	try:
 		await sheets_service.update_cell(row_number, column_1based(COL_REMINDER_SENT_AT), timestamp)
@@ -48,17 +77,29 @@ async def _update_reminder_sent_at(row_number: int, timestamp: str) -> None:
 
 async def _process_reminders(bot: Bot) -> None:
 	try:
-		rows = await _get_first_worksheet_rows()
+		now = datetime.now(PARIS_TZ)
+		recent_orders = await _get_recent_orders(now)
 	except Exception:
-		logging.exception("Error while reading Google Sheets for pickup reminders")
+		logging.exception("Error while reading filtered Google Sheets rows for pickup reminders")
+		try:
+			rows = await _get_first_worksheet_rows()
+		except Exception:
+			logging.exception("Error while reading Google Sheets for pickup reminders")
+			return
+
+		if len(rows) <= 1:
+			return
+
+		recent_orders = [(row_number, row) for row_number, row in enumerate(rows[1:], start=2)]
+		logging.info(
+			"Reminder row filtering fallback used: processing all %s rows",
+			len(recent_orders),
+		)
+
+	if not recent_orders:
 		return
 
-	if len(rows) <= 1:
-		return
-
-	now = datetime.now(PARIS_TZ)
-
-	for row_number, row in enumerate(rows[1:], start=2):
+	for row_number, row in recent_orders:
 		try:
 			if len(row) <= column_1based(COL_TELEGRAM_CHAT_ID) - 1:
 				logging.info("Skipped invalid reminder row %s: missing technical columns", row_number)
