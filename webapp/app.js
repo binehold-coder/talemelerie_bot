@@ -127,6 +127,14 @@ function calculateTotal() {
 	return getCartItems().reduce((sum, item) => sum + item.lineTotal, 0);
 }
 
+function toCents(amount) {
+	return Math.round(Number(amount) * 100);
+}
+
+function fromCents(cents) {
+	return Number((cents / 100).toFixed(2));
+}
+
 function renderTabs() {
 	if (!categoryTabsElement) {
 		return;
@@ -406,15 +414,20 @@ function buildPayload() {
 	const items = getCartItems().map((item) => ({
 		name: item.name,
 		quantity: item.quantity,
-		line_total: Number(item.lineTotal.toFixed(2)),
+		unit_price: fromCents(toCents(item.price)),
+		line_total: fromCents(toCents(item.price) * item.quantity),
 	}));
+	const totalCents = getCartItems().reduce(
+		(sum, item) => sum + toCents(item.price) * item.quantity,
+		0
+	);
 
 	return {
 		customer_name: clientNameInput.value.trim(),
 		customer_phone: phoneNumberInput.value.trim(),
 		pickup_datetime: pickupDatetimeInput.value,
 		items,
-		total_price: Number(calculateTotal().toFixed(2)),
+		total_price: fromCents(totalCents),
 	};
 }
 

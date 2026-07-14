@@ -1,6 +1,7 @@
 import json
 import logging
 from datetime import datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
 from aiogram import F, Router, types
@@ -61,34 +62,67 @@ def _format_items(items_value: Any) -> str:
 			)
 			.strip()
 		)
-		quantity = raw_item.get("quantity") or raw_item.get("qty") or raw_item.get("count") or 1
-		price = (
-			raw_item.get("price")
+		quantity_raw = raw_item.get("quantity") or raw_item.get("qty") or raw_item.get("count") or 1
+		try:
+			quantity = int(quantity_raw)
+		except (TypeError, ValueError):
+			quantity = 1
+
+		unit_price = _coerce_amount(
+			raw_item.get("unit_price")
 			or raw_item.get("unitPrice")
+			or raw_item.get("price")
+		)
+		line_total = _coerce_amount(
+			raw_item.get("line_total")
 			or raw_item.get("lineTotal")
-			or raw_item.get("line_total")
+			or raw_item.get("total")
 		)
 
-		item_text = f"{name} x{quantity}"
-		if price not in (None, ""):
-			item_text = f"{item_text} ({price}€)"
+		if unit_price is None and line_total is not None and quantity:
+			unit_price = (line_total / Decimal(quantity)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+		if line_total is None and unit_price is not None:
+			line_total = (unit_price * Decimal(quantity)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+		if unit_price is None or line_total is None:
+			item_text = f"{name} x {quantity}"
+		else:
+			item_text = (
+				f"{name} x {quantity} "
+				f"({_format_money(unit_price)} x {quantity} = {_format_money(line_total)})"
+			)
 
 		formatted_items.append(item_text)
 
 	return ", ".join(formatted_items) if formatted_items else "N/A"
 
 
-def _format_total(total_value: Any) -> str:
-	if total_value in (None, ""):
+def _coerce_amount(value: Any) -> Decimal | None:
+	if value in (None, ""):
+		return None
+
+	try:
+		amount = Decimal(str(value).replace(",", "."))
+	except (InvalidOperation, ValueError, TypeError):
+		return None
+
+	return amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _format_money(value: Any) -> str:
+	amount = _coerce_amount(value)
+	if amount is None:
 		return "N/A"
 
-	total_text = str(total_value).strip()
-	if not total_text:
-		return "N/A"
+	return f"{amount:.2f}".replace(".", ",") + " €"
 
-	if "€" in total_text:
-		return total_text
-	return f"{total_text}€"
+
+def _format_total(total_value: Any) -> float | None:
+	amount = _coerce_amount(total_value)
+	if amount is None:
+		return None
+
+	return float(amount)
 
 
 def _format_pickup_datetime(value: str) -> str:
@@ -152,7 +186,7 @@ async def web_app_data_handler(message: types.Message) -> None:
 		phone,
 		pickup_datetime,
 		items_details,
-		total_price,
+		total_price if total_price is not None else "N/A",
 	]
 
 	try:
