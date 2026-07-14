@@ -91,6 +91,17 @@ def _format_total(total_value: Any) -> str:
 	return f"{total_text}€"
 
 
+def _format_pickup_datetime(value: str) -> str:
+	"""Convert an HTML datetime-local value to the format used in the order sheet."""
+	try:
+		pickup_datetime = datetime.fromisoformat(value)
+	except ValueError:
+		logging.warning("Could not parse pickup datetime: %r", value)
+		return value
+
+	return pickup_datetime.strftime("%Hh%M %d-%m-%Y")
+
+
 @order_router.message(F.content_type == ContentType.WEB_APP_DATA)
 async def web_app_data_handler(message: types.Message) -> None:
 	if message.web_app_data is None:
@@ -113,9 +124,9 @@ async def web_app_data_handler(message: types.Message) -> None:
 	pickup_datetime_full = _pick_first(payload, ["pickup_datetime"], default="")
 
 	if pickup_datetime_full:
-		pickup_datetime = pickup_datetime_full
+		pickup_datetime = _format_pickup_datetime(pickup_datetime_full)
 	elif pickup_date and pickup_time:
-		pickup_datetime = f"{pickup_date} {pickup_time}"
+		pickup_datetime = _format_pickup_datetime(f"{pickup_date} {pickup_time}")
 	elif pickup_date:
 		pickup_datetime = pickup_date
 	elif pickup_time:
