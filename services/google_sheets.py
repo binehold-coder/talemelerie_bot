@@ -15,6 +15,23 @@ from services.order_sheet_schema import COL_ORDER_ID, ORDER_SHEET_COLUMNS, build
 BASE_DIR = Path(__file__).resolve().parent.parent
 ORDER_COUNTERS_WORKSHEET_TITLE = "Order Counters"
 ORDER_COUNTERS_HEADERS = ["Prefix", "Last sequence"]
+LEGACY_ORDER_SHEET_COLUMNS = [
+	"Date Commande",
+	"Client",
+	"Téléphone",
+	"Retrait prévu",
+	"Commande (Détails)",
+	"Total (€)",
+	"Chat ID",
+	"Rappel envoyé le",
+	"Order ID",
+	"Statut",
+	"Statut mis à jour le",
+	"Notification prêt envoyée le",
+	"Retiré le",
+	"Annulé le",
+	"Motif d’annulation",
+]
 
 
 class GoogleSheetsService:
@@ -75,23 +92,78 @@ class GoogleSheetsService:
 
 	def _ensure_order_schema(self) -> None:
 		worksheet = self._get_first_worksheet()
-		headers = worksheet.row_values(1)
-		cells_to_update: list[tuple[int, str]] = []
-
-		for column, expected_header in enumerate(ORDER_SHEET_COLUMNS, start=1):
-			current_header = headers[column - 1].strip() if column <= len(headers) else ""
-			if column >= 9 and current_header and current_header != expected_header:
-				raise RuntimeError(
-					f"Managed header mismatch at column {column}: expected '{expected_header}', found '{current_header}'"
-				)
-			if current_header:
-				continue
-			cells_to_update.append((column, expected_header))
-
-		for column, expected_header in cells_to_update:
-			worksheet.update_cell(1, column, expected_header)
+		self._migrate_order_schema_if_needed(worksheet)
 
 		self._get_or_create_order_counters_worksheet()
+
+	def _migrate_order_schema_if_needed(self, worksheet) -> None:
+		rows = worksheet.get_all_values()
+		headers = rows[0] if rows else []
+		normalized_headers = [header.strip() for header in headers]
+
+		target_prefix_matches = all(
+			(index < len(normalized_headers) and normalized_headers[index] == expected)
+			for index, expected in enumerate(ORDER_SHEET_COLUMNS)
+		)
+		has_extra_non_empty_headers = any(
+			header
+			for header in normalized_headers[len(ORDER_SHEET_COLUMNS):]
+		)
+		target_matches = target_prefix_matches and not has_extra_non_empty_headers
+		if target_matches:
+			logging.info("Order schema migration skipped: worksheet already in target order")
+			return
+
+		legacy_matches = all(
+			(index >= len(normalized_headers))
+			or (not normalized_headers[index])
+			or (normalized_headers[index] == LEGACY_ORDER_SHEET_COLUMNS[index])
+			for index in range(len(LEGACY_ORDER_SHEET_COLUMNS))
+		)
+		if not legacy_matches:
+			raise RuntimeError(
+				"Order worksheet headers are in an unexpected format; migration aborted to avoid data corruption"
+			)
+
+		non_empty_headers = {header for header in normalized_headers if header}
+		allowed_headers = set(ORDER_SHEET_COLUMNS)
+		unexpected_headers = sorted(non_empty_headers - allowed_headers)
+		if unexpected_headers:
+			raise RuntimeError(
+				f"Order worksheet contains unexpected headers that cannot be mapped safely: {unexpected_headers}"
+			)
+
+		logging.info("Order schema migration detected: creating backup and reordering columns")
+		backup_title = f"Orders Backup {datetime.now().strftime('%Y-%m-%d %H-%M')}"
+		max_cols = max((len(row) for row in rows), default=len(ORDER_SHEET_COLUMNS))
+		backup = self.spreadsheet.add_worksheet(
+			title=backup_title,
+			rows=max(len(rows), 1),
+			cols=max(max_cols, len(ORDER_SHEET_COLUMNS)),
+		)
+		if rows:
+			backup.update("A1", rows)
+		logging.info("Order schema migration backup created: %s", backup_title)
+
+		header_index_by_name = {
+			header: index
+			for index, header in enumerate(normalized_headers)
+			if header
+		}
+		reordered_rows = [ORDER_SHEET_COLUMNS]
+		for source_row in rows[1:]:
+			reordered_rows.append(
+				[
+					source_row[header_index_by_name[name]]
+					if name in header_index_by_name and header_index_by_name[name] < len(source_row)
+					else ""
+					for name in ORDER_SHEET_COLUMNS
+				]
+			)
+
+		worksheet.clear()
+		worksheet.update("A1", reordered_rows)
+		logging.info("Order schema migration completed successfully")
 
 	def _append_order_with_sequential_id(self, row_values: dict[str, Any], created_at: datetime) -> str:
 		worksheet = self._get_first_worksheet()
