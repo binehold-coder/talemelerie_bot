@@ -549,13 +549,14 @@ if (confirmOrderButton) {
 		}
 
 		// Validation passed, submit order
-		const payload = buildPayload();
-		
-		if (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData) {
-			window.Telegram.WebApp.sendData(JSON.stringify(payload));
-			window.Telegram.WebApp.close();
+		const orderData = buildPayload();
+
+		if (window.Telegram && window.Telegram.WebApp) {
+			const tg = window.Telegram.WebApp;
+			tg.sendData(JSON.stringify(orderData));
+			tg.close(); // Close Web App after sending data
 		} else {
-			alert(JSON.stringify(payload, null, 2));
+			alert("Ошибка: Web App запущен вне Telegram!");
 		}
 	});
 }

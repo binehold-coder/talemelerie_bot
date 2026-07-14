@@ -29,6 +29,15 @@ class GoogleSheetsService:
 			raise RuntimeError("The spreadsheet does not contain any worksheets")
 		return worksheet.title
 
+	def _append_row(self, row_data: list) -> None:
+		worksheet = self.spreadsheet.get_worksheet(0)
+		if worksheet is None:
+			raise RuntimeError("The spreadsheet does not contain any worksheets")
+		worksheet.append_row(row_data)
+
+	async def append_order(self, row_data: list) -> None:
+		await asyncio.to_thread(self._append_row, row_data)
+
 	async def test_connection(self) -> bool:
 		try:
 			title = await asyncio.to_thread(self._get_first_worksheet_title)
