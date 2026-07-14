@@ -187,6 +187,8 @@ async def web_app_data_handler(message: types.Message) -> None:
 		pickup_datetime,
 		items_details,
 		total_price if total_price is not None else "N/A",
+		message.chat.id,
+		"",
 	]
 
 	try:
