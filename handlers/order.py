@@ -32,6 +32,11 @@ from services.order_sheet_schema import (
 
 order_router = Router()
 PARIS_TZ = ZoneInfo("Europe/Paris")
+MAX_PICKUP_DAYS_AHEAD = 60
+WEEKDAY_OPEN_TIME = (6, 30)
+WEEKDAY_CLOSE_TIME = (19, 30)
+SUNDAY_OPEN_TIME = (6, 30)
+SUNDAY_CLOSE_TIME = (13, 0)
 
 
 @order_router.message(F.text == "📋 Passer une commande")
@@ -213,6 +218,48 @@ def parse_pickup_datetime(value: str) -> str:
 	return parsed_datetime.strftime("%Hh%M %d-%m-%Y")
 
 
+def _parse_pickup_datetime_to_paris(value: str) -> datetime:
+	pickup_datetime = datetime.strptime(value, "%Hh%M %d-%m-%Y")
+	return pickup_datetime.replace(tzinfo=PARIS_TZ)
+
+
+def _pickup_contact_phone() -> str:
+	phone = settings.bakery_phone.strip()
+	return phone or "+33 X XX XX XX XX"
+
+
+def is_valid_pickup_time(pickup_time: datetime) -> tuple[bool, str]:
+	now = _now_paris()
+	max_allowed = now + timedelta(days=MAX_PICKUP_DAYS_AHEAD)
+	if pickup_time > max_allowed:
+		return (
+			False,
+			(
+				"Pour les commandes au-delà de 60 jours, veuillez nous contacter directement :\n"
+				f"📞 {_pickup_contact_phone()}"
+			),
+		)
+
+	weekday = pickup_time.weekday()
+	if weekday == 6:  # Sunday
+		open_hour, open_minute = SUNDAY_OPEN_TIME
+		close_hour, close_minute = SUNDAY_CLOSE_TIME
+	else:
+		open_hour, open_minute = WEEKDAY_OPEN_TIME
+		close_hour, close_minute = WEEKDAY_CLOSE_TIME
+
+	pickup_minutes = pickup_time.hour * 60 + pickup_time.minute
+	open_minutes = open_hour * 60 + open_minute
+	close_minutes = close_hour * 60 + close_minute
+	if pickup_minutes < open_minutes or pickup_minutes > close_minutes:
+		return (
+			False,
+			"Nos horaires de retrait sont :\nLun–Sam 06:30–19:30, Dim 06:30–13:00",
+		)
+
+	return True, ""
+
+
 def _extract_items(payload: dict[str, Any]) -> list[Any]:
 	items = payload.get("items")
 	if items is None:
@@ -288,6 +335,11 @@ def validate_order_payload(payload: dict) -> dict:
 		if not pickup_date or not pickup_time:
 			raise ValueError("La date et l'heure de retrait sont requises.")
 		pickup_datetime = parse_pickup_datetime(f"{pickup_date} {pickup_time}")
+
+	pickup_datetime_paris = _parse_pickup_datetime_to_paris(pickup_datetime)
+	is_valid, pickup_error = is_valid_pickup_time(pickup_datetime_paris)
+	if not is_valid:
+		raise ValueError(pickup_error)
 
 	items = _extract_items(payload)
 	items_details = _format_items(items)

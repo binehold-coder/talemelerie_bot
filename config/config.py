@@ -17,6 +17,7 @@ class Settings(BaseSettings):
 	bot_token: SecretStr = Field(validation_alias="BOT_TOKEN")
 	spreadsheet_id: str = Field(validation_alias="SPREADSHEET_ID")
 	bakery_code: str = Field(default="LMS", validation_alias="BAKERY_CODE")
+	bakery_phone: str = Field(default="", validation_alias="BAKERY_PHONE")
 
 
 try:
