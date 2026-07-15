@@ -66,6 +66,7 @@ def _pick_first(payload: dict[str, Any], keys: list[str], default: str = "N/A") 
 
 # In-memory anti-duplicate guard for a single bot instance.
 _last_order_time: dict[int, datetime] = {}
+TEMP_DISABLE_DUPLICATE_GUARD = True
 
 
 def _format_items(items_value: Any) -> str:
@@ -372,10 +373,11 @@ async def web_app_data_handler(message: types.Message) -> None:
 	# Block accidental duplicate orders from the same chat within a 5-minute window.
 	chat_id = message.chat.id
 	now = _now_paris()
-	last_order_at = _last_order_time.get(chat_id)
-	if last_order_at is not None and now - last_order_at < timedelta(minutes=5):
-		await message.answer("⏳ Vous avez déjà passé une commande récemment. Veuillez patienter 5 minutes.")
-		return
+	if not TEMP_DISABLE_DUPLICATE_GUARD:
+		last_order_at = _last_order_time.get(chat_id)
+		if last_order_at is not None and now - last_order_at < timedelta(minutes=5):
+			await message.answer("⏳ Vous avez déjà passé une commande récemment. Veuillez patienter 5 minutes.")
+			return
 
 	try:
 		validated = validate_order_payload(payload)
@@ -417,7 +419,8 @@ async def web_app_data_handler(message: types.Message) -> None:
 		await message.answer("❌ Le service est temporairement indisponible. Veuillez réessayer dans 5 minutes.")
 		return
 
-	_last_order_time[chat_id] = created_at
+	if not TEMP_DISABLE_DUPLICATE_GUARD:
+		_last_order_time[chat_id] = created_at
 	logging.info("Order saved to Google Sheets successfully with order_id=%s for chat_id=%s", order_id, chat_id)
 	await message.answer(
 		f"✅ Merci pour votre commande ! Votre numéro de commande est {order_id}. Nous vous attendons à l'heure indiquée."
