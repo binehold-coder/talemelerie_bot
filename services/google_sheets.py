@@ -26,6 +26,11 @@ CONFIG_STATUSES = [
 	"Retiré",
 	"Annulé",
 ]
+PRODUCTION_ACTIVE_STATUSES = [
+	"Nouveau",
+	"En préparation",
+	"Prêt",
+]
 HEADER_ALIASES = {
 	"Nom": "Client",
 	"Date/Heure Retrait": "Retrait prévu",
@@ -114,6 +119,14 @@ class GoogleSheetsService:
 			showCustomUi=True,
 		)
 
+	def _build_production_formula(self) -> str:
+		status_column = gspread.utils.rowcol_to_a1(1, column_1based(COL_STATUS)).rstrip("1")
+		conditions = " OR ".join(
+			f"{status_column} = '{status}'"
+			for status in PRODUCTION_ACTIVE_STATUSES
+		)
+		return f'=QUERY({ORDERS_WORKSHEET_TITLE}!A:O, "SELECT * WHERE {conditions}", 1)'
+
 	def _get_or_create_order_counters_worksheet(self):
 		try:
 			worksheet = self.spreadsheet.worksheet(ORDER_COUNTERS_WORKSHEET_TITLE)
@@ -158,11 +171,12 @@ class GoogleSheetsService:
 	def _setup_sheets(self) -> None:
 		orders_worksheet = self._get_first_worksheet()
 		config_worksheet = self._get_or_create_worksheet(CONFIG_WORKSHEET_TITLE, rows=1000, cols=1)
-		self._get_or_create_worksheet(PRODUCTION_WORKSHEET_TITLE)
+		production_worksheet = self._get_or_create_worksheet(PRODUCTION_WORKSHEET_TITLE)
 
 		source_range = self._ensure_config_statuses(config_worksheet)
 		status_column = column_1based(COL_STATUS)
 		self._set_data_validation_for_column(orders_worksheet, status_column, source_range)
+		production_worksheet.update_acell("A1", self._build_production_formula())
 		self._protect_worksheet(config_worksheet)
 
 	def _migrate_order_schema_if_needed(self, worksheet) -> None:
