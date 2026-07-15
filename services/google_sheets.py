@@ -125,7 +125,7 @@ class GoogleSheetsService:
 			f"{status_column} = '{status}'"
 			for status in PRODUCTION_ACTIVE_STATUSES
 		)
-		return f'=QUERY({ORDERS_WORKSHEET_TITLE}!A:O, "SELECT * WHERE {conditions}", 1)'
+		return f'=QUERY({ORDERS_WORKSHEET_TITLE}!A:O; "SELECT * WHERE {conditions}"; 1)'
 
 	def _get_or_create_order_counters_worksheet(self):
 		try:
