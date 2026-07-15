@@ -60,6 +60,11 @@ async def main() -> None:
 		await bot.session.close()
 		return
 
+	try:
+		await sheets_service.setup_sheets()
+	except Exception:
+		logging.exception("Failed to set up Google Sheets tabs and validation. Continuing startup.")
+
 	reminder_task = asyncio.create_task(run_pickup_reminder_worker(bot))
 	loop = asyncio.get_running_loop()
 

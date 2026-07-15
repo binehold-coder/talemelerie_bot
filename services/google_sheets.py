@@ -7,14 +7,29 @@ from typing import Any
 
 import gspread
 from gspread.exceptions import WorksheetNotFound
+from gspread.utils import ValidationConditionType
 
 from config.config import settings
-from services.order_sheet_schema import COL_ORDER_ID, ORDER_SHEET_COLUMNS, build_order_row
+from services.order_sheet_schema import COL_ORDER_ID, COL_STATUS, ORDER_SHEET_COLUMNS, build_order_row, column_1based
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+ORDERS_WORKSHEET_TITLE = "Commandes"
+CONFIG_WORKSHEET_TITLE = "Config"
+PRODUCTION_WORKSHEET_TITLE = "Production"
 ORDER_COUNTERS_WORKSHEET_TITLE = "Order Counters"
 ORDER_COUNTERS_HEADERS = ["Prefix", "Last sequence"]
+CONFIG_STATUSES = [
+	"Nouveau",
+	"En préparation",
+	"Prêt",
+	"Retiré",
+	"Annulé",
+]
+HEADER_ALIASES = {
+	"Nom": "Client",
+	"Date/Heure Retrait": "Retrait prévu",
+}
 LEGACY_ORDER_SHEET_COLUMNS = [
 	"Date Commande",
 	"Client",
@@ -48,12 +63,56 @@ class GoogleSheetsService:
 		self.client = gspread.service_account(filename=str(credentials_path))
 		self.spreadsheet = self.client.open_by_key(settings.spreadsheet_id)
 		self._order_append_lock = asyncio.Lock()
+		self._service_account_email = self.client.http_client.auth.service_account_email
 
 	def _get_first_worksheet(self):
+		try:
+			return self.spreadsheet.worksheet(ORDERS_WORKSHEET_TITLE)
+		except WorksheetNotFound:
+			pass
+
 		worksheet = self.spreadsheet.get_worksheet(0)
 		if worksheet is None:
 			raise RuntimeError("The spreadsheet does not contain any worksheets")
 		return worksheet
+
+	def _get_or_create_worksheet(self, title: str, rows: int = 1000, cols: int = 26):
+		try:
+			return self.spreadsheet.worksheet(title)
+		except WorksheetNotFound:
+			return self.spreadsheet.add_worksheet(title=title, rows=rows, cols=cols)
+
+	def _ensure_config_statuses(self, worksheet) -> str:
+		status_values = [[status] for status in CONFIG_STATUSES]
+		worksheet.update("A1:A5", status_values)
+		return f"{CONFIG_WORKSHEET_TITLE}!A1:A{len(CONFIG_STATUSES)}"
+
+	def _protect_worksheet(self, worksheet) -> None:
+		protect = getattr(worksheet, "protect", None)
+		if callable(protect):
+			protect(editor_users_emails=[])
+			return
+
+		worksheet.add_protected_range(
+			f"A1:{gspread.utils.rowcol_to_a1(worksheet.row_count, worksheet.col_count)}",
+			editor_users_emails=[self._service_account_email],
+			description=f"Protect {worksheet.title}",
+		)
+
+	def _set_data_validation_for_column(self, worksheet, column: int, source_range: str) -> None:
+		set_validation = getattr(worksheet, "set_data_validation_for_column", None)
+		if callable(set_validation):
+			set_validation(column, source_range)
+			return
+
+		column_letter = gspread.utils.rowcol_to_a1(1, column).rstrip("1")
+		worksheet.add_validation(
+			f"{column_letter}2:{column_letter}",
+			ValidationConditionType.one_of_range,
+			[f"={source_range}"],
+			strict=True,
+			showCustomUi=True,
+		)
 
 	def _get_or_create_order_counters_worksheet(self):
 		try:
@@ -96,18 +155,29 @@ class GoogleSheetsService:
 
 		self._get_or_create_order_counters_worksheet()
 
+	def _setup_sheets(self) -> None:
+		orders_worksheet = self._get_first_worksheet()
+		config_worksheet = self._get_or_create_worksheet(CONFIG_WORKSHEET_TITLE, rows=1000, cols=1)
+		self._get_or_create_worksheet(PRODUCTION_WORKSHEET_TITLE)
+
+		source_range = self._ensure_config_statuses(config_worksheet)
+		status_column = column_1based(COL_STATUS)
+		self._set_data_validation_for_column(orders_worksheet, status_column, source_range)
+		self._protect_worksheet(config_worksheet)
+
 	def _migrate_order_schema_if_needed(self, worksheet) -> None:
 		rows = worksheet.get_all_values()
 		headers = rows[0] if rows else []
 		normalized_headers = [header.strip() for header in headers]
+		canonical_headers = [HEADER_ALIASES.get(header, header) for header in normalized_headers]
 
 		target_prefix_matches = all(
-			(index < len(normalized_headers) and normalized_headers[index] == expected)
+			(index < len(canonical_headers) and canonical_headers[index] == expected)
 			for index, expected in enumerate(ORDER_SHEET_COLUMNS)
 		)
 		has_extra_non_empty_headers = any(
 			header
-			for header in normalized_headers[len(ORDER_SHEET_COLUMNS):]
+			for header in canonical_headers[len(ORDER_SHEET_COLUMNS):]
 		)
 		target_matches = target_prefix_matches and not has_extra_non_empty_headers
 		if target_matches:
@@ -115,9 +185,9 @@ class GoogleSheetsService:
 			return
 
 		legacy_matches = all(
-			(index >= len(normalized_headers))
-			or (not normalized_headers[index])
-			or (normalized_headers[index] == LEGACY_ORDER_SHEET_COLUMNS[index])
+			(index >= len(canonical_headers))
+			or (not canonical_headers[index])
+			or (canonical_headers[index] == LEGACY_ORDER_SHEET_COLUMNS[index])
 			for index in range(len(LEGACY_ORDER_SHEET_COLUMNS))
 		)
 		if not legacy_matches:
@@ -125,7 +195,7 @@ class GoogleSheetsService:
 				"Order worksheet headers are in an unexpected format; migration aborted to avoid data corruption"
 			)
 
-		non_empty_headers = {header for header in normalized_headers if header}
+		non_empty_headers = {header for header in canonical_headers if header}
 		allowed_headers = set(ORDER_SHEET_COLUMNS)
 		unexpected_headers = sorted(non_empty_headers - allowed_headers)
 		if unexpected_headers:
@@ -147,7 +217,7 @@ class GoogleSheetsService:
 
 		header_index_by_name = {
 			header: index
-			for index, header in enumerate(normalized_headers)
+			for index, header in enumerate(canonical_headers)
 			if header
 		}
 		reordered_rows = [ORDER_SHEET_COLUMNS]
@@ -243,6 +313,9 @@ class GoogleSheetsService:
 
 	async def ensure_order_schema(self) -> None:
 		await asyncio.to_thread(self._ensure_order_schema)
+
+	async def setup_sheets(self) -> None:
+		await asyncio.to_thread(self._setup_sheets)
 
 	async def append_order_with_sequential_id(self, row_values: dict[str, Any], created_at: datetime) -> str:
 		async with self._order_append_lock:
