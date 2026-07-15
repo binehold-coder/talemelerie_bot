@@ -17,6 +17,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 ORDERS_WORKSHEET_TITLE = "Commandes"
 CONFIG_WORKSHEET_TITLE = "Config"
 PRODUCTION_WORKSHEET_TITLE = "Production"
+DASHBOARD_WORKSHEET_TITLE = "Dashboard"
 ORDER_COUNTERS_WORKSHEET_TITLE = "Order Counters"
 ORDER_COUNTERS_HEADERS = ["Prefix", "Last sequence"]
 CONFIG_STATUSES = [
@@ -172,11 +173,29 @@ class GoogleSheetsService:
 		orders_worksheet = self._get_first_worksheet()
 		config_worksheet = self._get_or_create_worksheet(CONFIG_WORKSHEET_TITLE, rows=1000, cols=1)
 		production_worksheet = self._get_or_create_worksheet(PRODUCTION_WORKSHEET_TITLE)
+		dashboard_worksheet = self._get_or_create_worksheet(DASHBOARD_WORKSHEET_TITLE, rows=1000, cols=8)
 
 		source_range = self._ensure_config_statuses(config_worksheet)
 		status_column = column_1based(COL_STATUS)
 		self._set_data_validation_for_column(orders_worksheet, status_column, source_range)
 		production_worksheet.update_acell("A1", self._build_production_formula())
+		dashboard_worksheet.update_acell("A1", '="📊 Dashboard - " & TEXT(TODAY(); "dd/MM/yyyy")')
+		dashboard_worksheet.update_acell("A3", '="Commandes aujourd\'hui: " & COUNTIF(Commandes!H:H; TEXT(TODAY(); "yyyy-mm-dd") & "*")')
+		dashboard_worksheet.update_acell("A4", '="Commandes cette semaine: " & COUNTIF(Commandes!H:H; ">=" & TEXT(TODAY()-WEEKDAY(TODAY();2)+1; "yyyy-mm-dd"))')
+		dashboard_worksheet.update_acell("A5", '="Commandes ce mois: " & COUNTIF(Commandes!H:H; ">=" & TEXT(EOMONTH(TODAY();-1)+1; "yyyy-mm-dd"))')
+		dashboard_worksheet.update_acell("A7", '="Total commandes: " & COUNTA(Commandes!H:H)-1')
+		dashboard_worksheet.update_acell("A8", '="Total CA: " & SUM(Commandes!G:G)')
+		dashboard_worksheet.update_acell("A9", '="CA réel (Retiré): " & SUMIF(Commandes!B:B; "Retiré"; Commandes!G:G)')
+		dashboard_worksheet.update_acell("A10", '="Annulé: " & COUNTIF(Commandes!B:B; "Annulé") & " commandes"')
+		dashboard_worksheet.update_acell("A12", '="Statuts:"')
+		dashboard_worksheet.update_acell("A13", '="• Nouveau: " & COUNTIF(Commandes!B:B; "Nouveau")')
+		dashboard_worksheet.update_acell("A14", '="• En préparation: " & COUNTIF(Commandes!B:B; "En préparation")')
+		dashboard_worksheet.update_acell("A15", '="• Prêt: " & COUNTIF(Commandes!B:B; "Prêt")')
+		dashboard_worksheet.update_acell("A16", '="• Retiré: " & COUNTIF(Commandes!B:B; "Retiré")')
+		dashboard_worksheet.update_acell("A17", '="• Annulé: " & COUNTIF(Commandes!B:B; "Annulé")')
+		bakery_phone = getattr(settings, "bakery_phone", "")
+		if bakery_phone:
+			dashboard_worksheet.update_acell("B1", bakery_phone)
 		self._protect_worksheet(config_worksheet)
 
 	def _migrate_order_schema_if_needed(self, worksheet) -> None:
