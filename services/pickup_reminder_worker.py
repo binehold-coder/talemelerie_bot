@@ -16,7 +16,7 @@ from services.order_sheet_schema import (
 )
 
 
-REMINDER_LEAD_MINUTES = 1
+REMINDER_LEAD_HOURS = 1
 PARIS_TZ = ZoneInfo("Europe/Paris")
 
 
@@ -118,14 +118,14 @@ async def _process_reminders(bot: Bot) -> None:
 				logging.info("Skipped invalid reminder row %s: invalid pickup datetime %r", row_number, pickup_value)
 				continue
 
-			reminder_time = pickup_datetime - timedelta(minutes=REMINDER_LEAD_MINUTES)
+			reminder_time = pickup_datetime - timedelta(hours=REMINDER_LEAD_HOURS)
 			if not (reminder_time <= now < pickup_datetime):
 				continue
 
 			pickup_time_text = pickup_datetime.strftime("%Hh%M %d-%m-%Y")
 			message_text = (
-				f"Bonjour, {customer_name} ! Votre retrait est prévu dans une minute, à {pickup_time_text}. "
-				"Nous vous attendons chez La Talemelerie ! 🥐"
+				f"Bonjour {customer_name}, votre retrait est prévu à {pickup_time_text}. "
+				"Nous vous attendons chez La Talemelerie !"
 			)
 
 			chat_id = int(telegram_chat_id)
@@ -139,7 +139,7 @@ async def _process_reminders(bot: Bot) -> None:
 
 
 async def run_pickup_reminder_worker(bot: Bot) -> None:
-	logging.info("Pickup reminder worker started (lead time: %s minute(s))", REMINDER_LEAD_MINUTES)
+	logging.info("Pickup reminder worker started (lead time: %s heure(s))", REMINDER_LEAD_HOURS)
 	while True:
 		await _process_reminders(bot)
 		await asyncio.sleep(60)
