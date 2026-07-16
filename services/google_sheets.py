@@ -10,7 +10,16 @@ from gspread.exceptions import WorksheetNotFound
 from gspread.utils import ValidationConditionType
 
 from config.config import settings
-from services.order_sheet_schema import COL_ORDER_ID, COL_STATUS, ORDER_SHEET_COLUMNS, build_order_row, column_1based
+from services.order_sheet_schema import (
+	COL_CANCELLATION_REASON,
+	COL_CANCELLED_AT,
+	COL_ORDER_ID,
+	COL_STATUS,
+	COL_STATUS_UPDATED_AT,
+	ORDER_SHEET_COLUMNS,
+	build_order_row,
+	column_1based,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -353,6 +362,60 @@ class GoogleSheetsService:
 	async def append_order_with_sequential_id(self, row_values: dict[str, Any], created_at: datetime) -> str:
 		async with self._order_append_lock:
 			return await asyncio.to_thread(self._append_order_with_sequential_id, row_values, created_at)
+
+	def _update_order_status(
+		self,
+		order_id: str,
+		status: str,
+		*,
+		status_updated_at: str | None = None,
+		cancelled_at: str | None = None,
+		cancellation_reason: str | None = None,
+	) -> bool:
+		worksheet = self._get_first_worksheet()
+		rows = worksheet.get_all_values()
+		target_order_id = order_id.strip().upper()
+		if not target_order_id:
+			return False
+
+		order_id_index = column_1based(COL_ORDER_ID) - 1
+		row_number: int | None = None
+		for idx, row in enumerate(rows[1:], start=2):
+			stored_order_id = row[order_id_index].strip().upper() if order_id_index < len(row) else ""
+			if stored_order_id == target_order_id:
+				row_number = idx
+				break
+
+		if row_number is None:
+			return False
+
+		worksheet.update_cell(row_number, column_1based(COL_STATUS), status)
+		if status_updated_at is not None:
+			worksheet.update_cell(row_number, column_1based(COL_STATUS_UPDATED_AT), status_updated_at)
+		if cancelled_at is not None:
+			worksheet.update_cell(row_number, column_1based(COL_CANCELLED_AT), cancelled_at)
+		if cancellation_reason is not None:
+			worksheet.update_cell(row_number, column_1based(COL_CANCELLATION_REASON), cancellation_reason)
+
+		return True
+
+	async def update_order_status(
+		self,
+		order_id: str,
+		status: str,
+		*,
+		status_updated_at: str | None = None,
+		cancelled_at: str | None = None,
+		cancellation_reason: str | None = None,
+	) -> bool:
+		return await asyncio.to_thread(
+			self._update_order_status,
+			order_id,
+			status,
+			status_updated_at=status_updated_at,
+			cancelled_at=cancelled_at,
+			cancellation_reason=cancellation_reason,
+		)
 
 	async def test_connection(self) -> bool:
 		try:

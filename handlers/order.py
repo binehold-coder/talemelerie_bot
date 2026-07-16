@@ -10,8 +10,12 @@ from zoneinfo import ZoneInfo
 
 from aiogram import F, Router, types
 from aiogram.enums import ContentType
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 
 from config.config import settings
+from keyboards.inline import order_cancel_inline_keyboard
 from services.google_sheets import sheets_service
 from services.order_sheet_schema import (
 	COL_CANCELLATION_REASON,
@@ -19,6 +23,7 @@ from services.order_sheet_schema import (
 	COL_COLLECTED_AT,
 	COL_CREATED_AT,
 	COL_CUSTOMER_NAME,
+	COL_ORDER_ID,
 	COL_ORDER_DETAILS,
 	COL_PHONE,
 	COL_PICKUP_DATETIME,
@@ -28,6 +33,7 @@ from services.order_sheet_schema import (
 	COL_STATUS_UPDATED_AT,
 	COL_TELEGRAM_CHAT_ID,
 	COL_TOTAL,
+	get_row_value,
 )
 
 
@@ -38,6 +44,10 @@ WEEKDAY_OPEN_TIME = (6, 30)
 WEEKDAY_CLOSE_TIME = (19, 30)
 SUNDAY_OPEN_TIME = (6, 30)
 SUNDAY_CLOSE_TIME = (13, 0)
+
+
+class CancelOrderState(StatesGroup):
+	waiting_order_id = State()
 
 
 @order_router.message(F.text == "📋 Passer une commande")
@@ -227,6 +237,69 @@ def _parse_pickup_datetime_to_paris(value: str) -> datetime:
 def _pickup_contact_phone() -> str:
 	phone = settings.bakery_phone.strip()
 	return phone or "+33 X XX XX XX XX"
+
+
+def _cancel_fallback_message() -> str:
+	return (
+		"Votre commande ne peut plus être annulée automatiquement, car sa préparation peut déjà avoir commencé.\n"
+		"Pour toute demande, appelez-nous :\n"
+		f"📞 {_pickup_contact_phone()}"
+	)
+
+
+def _normalized_order_id(value: str) -> str:
+	return value.strip().upper()
+
+
+async def _find_order_by_id(order_id: str) -> tuple[int, list[str]] | None:
+	rows = await sheets_service.get_all_rows()
+	target = _normalized_order_id(order_id)
+	for row_number, row in enumerate(rows[1:], start=2):
+		stored_order_id = _normalized_order_id(get_row_value(row, COL_ORDER_ID))
+		if stored_order_id == target:
+			return row_number, row
+	return None
+
+
+async def _cancel_order_in_sheet(order_id: str) -> bool:
+	now_display = _format_display_datetime(_now_paris())
+	return await sheets_service.update_order_status(
+		order_id,
+		"Annulé",
+		status_updated_at=now_display,
+		cancelled_at=now_display,
+		cancellation_reason="Annulé par le client",
+	)
+
+
+async def _process_cancel_request(message: types.Message, chat_id: int, order_id: str) -> None:
+	if not order_id.strip():
+		await message.answer("Veuillez saisir un numéro de commande valide.")
+		return
+
+	found = await _find_order_by_id(order_id)
+	if found is None:
+		await message.answer("Aucune commande trouvée pour ce numéro.")
+		return
+
+	_, row = found
+	stored_chat_id = get_row_value(row, COL_TELEGRAM_CHAT_ID).strip()
+	if stored_chat_id != str(chat_id):
+		await message.answer("Cette commande ne vous appartient pas.")
+		return
+
+	status = get_row_value(row, COL_STATUS).strip()
+	if status != "Nouveau":
+		await message.answer(_cancel_fallback_message())
+		return
+
+	stored_order_id = get_row_value(row, COL_ORDER_ID).strip()
+	was_updated = await _cancel_order_in_sheet(stored_order_id)
+	if not was_updated:
+		await message.answer("❌ Impossible d'annuler la commande pour le moment. Veuillez réessayer.")
+		return
+
+	await message.answer("✅ Votre commande a bien été annulée.")
 
 
 def is_valid_pickup_time(pickup_time: datetime) -> tuple[bool, str]:
@@ -476,5 +549,34 @@ async def web_app_data_handler(message: types.Message) -> None:
 		_last_order_time[chat_id] = created_at
 	logging.info("Order saved to Google Sheets successfully with order_id=%s for chat_id=%s", order_id, chat_id)
 	await message.answer(
-		f"✅ Merci pour votre commande ! Votre numéro de commande est {order_id}. Nous vous attendons à l'heure indiquée."
+		f"✅ Merci pour votre commande ! Votre numéro de commande est {order_id}. Nous vous attendons à l'heure indiquée.",
+		reply_markup=order_cancel_inline_keyboard(order_id),
 	)
+
+
+@order_router.message(Command("cancel_order"))
+async def cancel_order_command_handler(message: types.Message, state: FSMContext) -> None:
+	await state.set_state(CancelOrderState.waiting_order_id)
+	await message.answer("Veuillez entrer votre numéro de commande (ex: LT-LMS-2026-07-001) :")
+
+
+@order_router.message(CancelOrderState.waiting_order_id)
+async def cancel_order_id_input_handler(message: types.Message, state: FSMContext) -> None:
+	if message.text is None:
+		await message.answer("Veuillez envoyer un numéro de commande en texte.")
+		return
+
+	await _process_cancel_request(message, message.chat.id, message.text)
+	await state.clear()
+
+
+@order_router.callback_query(F.data.startswith("cancel_order:"))
+async def cancel_order_callback_handler(callback: types.CallbackQuery, state: FSMContext) -> None:
+	if callback.message is None or not isinstance(callback.message, types.Message):
+		await callback.answer()
+		return
+
+	order_id = callback.data.split(":", maxsplit=1)[1]
+	await _process_cancel_request(callback.message, callback.from_user.id, order_id)
+	await state.clear()
+	await callback.answer()
