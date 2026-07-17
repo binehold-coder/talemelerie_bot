@@ -72,28 +72,126 @@ const orderFormSection = document.getElementById("order-form-section") || checko
 const clientNameInput = document.getElementById("client-name");
 const phoneNumberInput = document.getElementById("phone-number");
 const pickupDatetimeInput = document.getElementById("pickup-datetime");
+const pickupCustomErrorElement = document.getElementById("pickup-custom-error");
 const allergenCheckbox = document.getElementById("allergen-confirmation");
 const totalAmountElement = document.getElementById("total-amount");
 const confirmOrderButton = document.getElementById("confirm-order-btn");
 const customerNameStorageKey = "talemelerie_customer_name";
 const customerPhoneStorageKey = "talemelerie_customer_phone";
+const MAX_PICKUP_DAYS_AHEAD = 60;
+const WEEKDAY_OPEN_MINUTES = 6 * 60 + 30;
+const WEEKDAY_CLOSE_MINUTES = 19 * 60 + 30;
+const SUNDAY_OPEN_MINUTES = 6 * 60 + 30;
+const SUNDAY_CLOSE_MINUTES = 13 * 60;
+
+function resolveBakeryPhone() {
+	const urlPhone = new URLSearchParams(window.location.search).get("bakery_phone");
+	if (urlPhone && urlPhone.trim()) {
+		return decodeURIComponent(urlPhone.trim());
+	}
+
+	const startParam = tg?.initDataUnsafe?.start_param;
+	if (typeof startParam === "string" && startParam.trim()) {
+		const decodedStartParam = decodeURIComponent(startParam.trim());
+		const phoneMatch = decodedStartParam.match(/(?:^|[;|,\s])phone=([^;|,\s]+)/i);
+		if (phoneMatch && phoneMatch[1]) {
+			return phoneMatch[1];
+		}
+	}
+
+	return "+33 X XX XX XX XX";
+}
+
+const bakeryPhone = resolveBakeryPhone();
+
+function toDatetimeLocalValue(date) {
+	const offset = date.getTimezoneOffset() * 60000;
+	return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
+
+function getMinAllowedPickupDate() {
+	const minDate = new Date();
+	minDate.setMinutes(minDate.getMinutes() + 30);
+	minDate.setMinutes(Math.ceil(minDate.getMinutes() / 15) * 15);
+	minDate.setSeconds(0, 0);
+	return minDate;
+}
+
+function getMaxAllowedPickupDate() {
+	const maxDate = new Date();
+	maxDate.setDate(maxDate.getDate() + MAX_PICKUP_DAYS_AHEAD);
+	maxDate.setHours(23, 59, 59, 0);
+	return maxDate;
+}
+
+function setPickupErrorMessage(message) {
+	if (!pickupCustomErrorElement) {
+		return;
+	}
+
+	if (message) {
+		pickupCustomErrorElement.textContent = message;
+		pickupCustomErrorElement.classList.remove("d-none");
+		return;
+	}
+
+	pickupCustomErrorElement.textContent = "";
+	pickupCustomErrorElement.classList.add("d-none");
+}
+
+function isWithinWorkingHours(selectedDate) {
+	const day = selectedDate.getDay();
+	const selectedMinutes = selectedDate.getHours() * 60 + selectedDate.getMinutes();
+
+	if (day === 0) {
+		return selectedMinutes >= SUNDAY_OPEN_MINUTES && selectedMinutes <= SUNDAY_CLOSE_MINUTES;
+	}
+
+	return selectedMinutes >= WEEKDAY_OPEN_MINUTES && selectedMinutes <= WEEKDAY_CLOSE_MINUTES;
+}
+
+function getPickupValidationError(pickupValue) {
+	if (pickupValue.length === 0) {
+		return "Veuillez choisir une date et une heure de retrait.";
+	}
+
+	const selectedDate = new Date(pickupValue);
+	if (Number.isNaN(selectedDate.getTime())) {
+		return "Veuillez choisir une date et une heure de retrait valide.";
+	}
+
+	const minAllowedDate = getMinAllowedPickupDate();
+	if (selectedDate < minAllowedDate) {
+		return "Veuillez choisir une date et une heure de retrait valide (au moins 30 minutes à l'avance, par tranches de 15 min).";
+	}
+
+	const maxAllowedDate = getMaxAllowedPickupDate();
+	if (selectedDate > maxAllowedDate) {
+		return (
+			"Pour les commandes au-delà de 60 jours, veuillez nous contacter directement :\n"
+			+ `📞 ${bakeryPhone}`
+		);
+	}
+
+	if (selectedDate.getMinutes() % 15 !== 0) {
+		return "Veuillez choisir une date et une heure de retrait valide (au moins 30 minutes à l'avance, par tranches de 15 min).";
+	}
+
+	if (!isWithinWorkingHours(selectedDate)) {
+		return "Nos horaires de retrait sont :\nLun-Sam 06:30-19:30, Dim 06:30-13:00";
+	}
+
+	return null;
+}
 
 // FIX: Local timezone calculation and 15-minute step rounding
 function initializePickupTime() {
 	if (!pickupDatetimeInput) return;
 
-	const minDate = new Date();
-	minDate.setMinutes(minDate.getMinutes() + 30); // Base +30 mins rule
-
-	// Round up to the nearest 15-minute interval
-	minDate.setMinutes(Math.ceil(minDate.getMinutes() / 15) * 15);
-	minDate.setSeconds(0, 0); // Zero out seconds
-
-	// Correct timezone offset for HTML datetime-local (avoid UTC mismatch)
-	const offset = minDate.getTimezoneOffset() * 60000;
-	const localMinDate = new Date(minDate.getTime() - offset);
-	
-	pickupDatetimeInput.min = localMinDate.toISOString().slice(0, 16);
+	const minDate = getMinAllowedPickupDate();
+	const maxDate = getMaxAllowedPickupDate();
+	pickupDatetimeInput.min = toDatetimeLocalValue(minDate);
+	pickupDatetimeInput.max = toDatetimeLocalValue(maxDate);
 }
 initializePickupTime();
 prefillCustomerContact();
@@ -385,17 +483,10 @@ function validateForm() {
 	const isNameValid = nameValue.length > 0 && /^[a-zA-ZÀ-ÿ\s-]+$/.test(nameValue);
 	const isPhoneValid = validatePhone(phoneNumberInput.value.trim());
 	const pickupValue = pickupDatetimeInput.value.trim();
-	let isPickupDatetimeValid = false;
-
-	if (pickupValue.length > 0) {
-		const selectedDate = new Date(pickupValue);
-		if (!Number.isNaN(selectedDate.getTime())) {
-			const minAllowedDate = new Date(Date.now() + 30 * 60 * 1000);
-			const isFuture = selectedDate >= minAllowedDate;
-			const is15MinStep = selectedDate.getMinutes() % 15 === 0; // Strict 15-min interval check
-			isPickupDatetimeValid = isFuture && is15MinStep;
-		}
-	}
+	const pickupValidationError = getPickupValidationError(pickupValue);
+	const isPickupDatetimeValid = pickupValidationError === null;
+	pickupDatetimeInput.setCustomValidity(isPickupDatetimeValid ? "" : "invalid");
+	setPickupErrorMessage(pickupValidationError);
 
 	const isAllergenAccepted = allergenCheckbox.checked;
 	const hasItems = calculateTotal() > 0;
@@ -521,7 +612,7 @@ if (modalProductContent) {
 	});
 }
 
-// ЖЕСТКАЯ КОРРЕКЦИЯ ВРЕМЕНИ (Принудительный шаг 15 минут)
+// Keep user-selected time aligned to the 15-minute input step.
 pickupDatetimeInput.addEventListener("change", (e) => {
 	if (!e.target.value) return;
 
@@ -531,10 +622,10 @@ pickupDatetimeInput.addEventListener("change", (e) => {
 	const minutes = selectedDate.getMinutes();
 	const remainder = minutes % 15;
 
-	// Если время уже кратно 15, ничего не делаем
+	// Keep exact values already aligned to 15-minute increments.
 	if (remainder === 0) return;
 
-	// Округляем до ближайшего 15-минутного интервала
+	// Round to the nearest 15-minute increment.
 	if (remainder >= 8) {
 		selectedDate.setMinutes(minutes + (15 - remainder));
 	} else {
@@ -542,12 +633,8 @@ pickupDatetimeInput.addEventListener("change", (e) => {
 	}
 	selectedDate.setSeconds(0, 0);
 
-	// Конвертируем обратно в локальное время для инпута (сдвиг часового пояса)
-	const offset = selectedDate.getTimezoneOffset() * 60000;
-	const localDate = new Date(selectedDate.getTime() - offset);
-
-	// Перезаписываем значение в инпуте и дергаем валидацию
-	e.target.value = localDate.toISOString().slice(0, 16);
+	// Write the rounded local value back to the control and re-validate.
+	e.target.value = toDatetimeLocalValue(selectedDate);
 	validateForm();
 });
 

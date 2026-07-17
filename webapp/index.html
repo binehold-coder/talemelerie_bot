@@ -64,6 +64,7 @@
 						<label for="pickup-datetime" class="form-label fw-semibold">Date et Heure de retrait</label>
 						<input type="datetime-local" class="form-control form-control-lg" id="pickup-datetime" name="pickup_datetime" step="900" required>
 						<div class="invalid-feedback">Veuillez choisir une date et une heure de retrait valide (au moins 30 minutes à l'avance, par tranches de 15 min).</div>
+						<div id="pickup-custom-error" class="text-danger small mt-2 d-none" aria-live="polite"></div>
 					</div>
 
 					<div class="form-check mt-4 p-3 rounded-4 bg-warning-subtle border border-warning-subtle">
